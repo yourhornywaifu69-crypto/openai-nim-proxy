@@ -149,6 +149,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // 🔥 Added for Render to prevent buffering
       
       let buffer = '';
       let reasoningStarted = false;
@@ -271,9 +272,9 @@ app.all('*', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+// 🔥 Added '0.0.0.0' for Render compatibility
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`OpenAI to NVIDIA NIM Proxy running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
   console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
 });
