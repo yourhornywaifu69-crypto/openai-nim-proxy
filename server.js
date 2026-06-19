@@ -12,17 +12,19 @@ app.use(express.json());
 
 // NVIDIA NIM API configuration
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
-const NIM_API_KEY = process.env.NIM_API_KEY;
+// Fallback API key if set in environment, but we will prioritize Janitor AI's key
+const ENV_API_KEY = process.env.NIM_API_KEY;
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
+const ENABLE_THINKING_MODE = true; // Set to true to enable chat_template_kwargs thinking parameter
 
 // Model mapping (adjust based on available NIM models)
 const MODEL_MAPPING = {
   'deepseek-v4-pro': 'deepseek-ai/deepseek-v4-pro', 
+  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4-flash', 
 };
 
 // Health check endpoint
@@ -53,6 +55,28 @@ app.get('/v1/models', (req, res) => {
 // Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
+    // 🔥 NEW: Get API key from Janitor AI's Authorization header
+    let requestApiKey = ENV_API_KEY;
+    const authHeader = req.headers.authorization;
+    
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const extractedKey = authHeader.substring(7);
+      if (extractedKey && extractedKey !== 'undefined' && extractedKey !== 'null') {
+        requestApiKey = extractedKey;
+      }
+    }
+
+    // If there's still no key, throw a clear 401 error
+    if (!requestApiKey) {
+      return res.status(401).json({
+        error: {
+          message: 'No API key provided. Please enter your NVIDIA API key in Janitor AI.',
+          type: 'invalid_request_error',
+          code: 401
+        }
+      });
+    }
+
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
     // Smart model selection with fallback
@@ -64,10 +88,11 @@ app.post('/v1/chat/completions', async (req, res) => {
           messages: [{ role: 'user', content: 'test' }],
           max_tokens: 1
         }, {
-          headers: { 'Authorization': `Bearer ${NIM_API_KEY}`, 'Content-Type': 'application/json' },
+          // 🔥 CHANGED: Use requestApiKey instead of NIM_API_KEY
+          headers: { 'Authorization': `Bearer ${requestApiKey}`, 'Content-Type': 'application/json' },
           validateStatus: (status) => status < 500
-        }).then(res => {
-          if (res.status >= 200 && res.status < 300) {
+        }).then(response => {
+          if (response.status >= 200 && response.status < 300) {
             nimModel = model;
           }
         });
@@ -85,20 +110,35 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
+    // Check if we are using a DeepSeek V4 model
+    const isDeepSeekV4 = nimModel.includes('deepseek-v4');
+
     // Transform OpenAI request to NIM format
     const nimRequest = {
       model: nimModel,
       messages: messages,
       temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
-      extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
+
+    // 🔥 NVIDIA strictly requires chat_template_kwargs for DeepSeek V4, or it hangs
+    if (isDeepSeekV4) {
+      nimRequest.extra_body = { 
+        chat_template_kwargs: { thinking: ENABLE_THINKING_MODE } 
+      };
+    } else if (ENABLE_THINKING_MODE) {
+      // Fallback for other non-DeepSeek reasoning models
+      nimRequest.extra_body = { 
+        chat_template_kwargs: { thinking: true } 
+      };
+    }
     
     // Make request to NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
+        // 🔥 CHANGED: Use requestApiKey instead of NIM_API_KEY
+        'Authorization': `Bearer ${requestApiKey}`,
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json'
